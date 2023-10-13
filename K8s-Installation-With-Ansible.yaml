@@ -1,0 +1,128 @@
+- name: K8s-Installation
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: disable SWAP
+      command: "swapoff -a"
+
+    - name: disable SWAP in fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+sw\s+.*)$'
+        replace: '# \1'
+
+    - name: create an empty file for the Containerd module
+      copy:
+        content: ""
+        dest: /etc/modules-load.d/containerd.conf
+        force: no
+
+    - name: configure modules for Containerd
+      blockinfile:
+        path: /etc/modules-load.d/containerd.conf
+        block:
+          - br_netfilter
+          - overlay
+
+    - name: Adding Docker-Repo GPG-Key
+      get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /root/docker-keyring.gpg
+        mode: 0755
+        force: yes
+
+    - name: Check Existence of Docker GPG-Key
+      stat:
+        path: /usr/share/keyrings/docker-archive-keyring.gpg
+      register: result1
+
+    - name: Encrypt the Docker GPG-Key
+      shell: "cat /root/docker-keyring.gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg"
+      when: not result1.stat.exists
+
+    - name: Add Docker Repository
+      shell: echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+      register: result2
+
+    - name: Add Docker Repository
+      copy:
+        dest: /etc/apt/sources.list.d/docker.list
+        content: |
+          {{ result2.stdout }}
+        force: yes
+
+    - name: Install containerd.io on All Nodes
+      apt:
+        name: ['containerd.io']
+        update_cache: yes
+        state: latest
+
+    - name: Containerd Configure
+      shell: "containerd config default > /etc/containerd/config.toml"
+
+    - name: configuring the systemd cgroup driver for Containerd
+      lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: '            SystemdCgroup = false'
+        line: '            SystemdCgroup = true'
+
+    - name: enable the Containerd service and start it
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+        daemon-reload: yes
+
+    - name: Load Kernel Modules
+      modprobe:
+        name:
+          - br_netfilter
+          - overlay
+        state: present
+
+    - name: apply sysctl params without reboot
+      command: sysctl --system
+
+    - name: set ip_forward
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        sysctl_set: yes
+        state: present
+        reload: yes
+
+    - name: Install Necessary Pakages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - conntrack
+        update_cache: yes
+        state: latest
+
+
+    - name: add Kubernetes apt-key
+      apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+
+    - name: add Kubernetes' APT repository
+      apt_repository:
+        repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+        state: present
+        filename: 'kubernetes'
+
+
+    - name: Install Kubernetes
+      apt:
+        name:
+          -  kubelet
+          -  kubeadm
+          -  kubectl
+        update_cache: yes
+        state: latest
+
+    - name: Hold Version
+      shell: "apt-mark hold kubelet kubeadm kubectl"
